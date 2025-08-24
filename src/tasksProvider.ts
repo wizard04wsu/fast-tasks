@@ -304,6 +304,62 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskTreeItem> {
     }
 
     async editTask(item: TaskTreeItem): Promise<void> {
+        
+        const task = item.task;
+        
+        // 1) User/profile-scoped tasks.
+        if (task.scope === vscode.TaskScope.Global) {
+            
+            // Open the tasks.json file of the active profile.
+            await vscode.commands.executeCommand('workbench.action.tasks.openUserTasks');
+            
+            return;
+        }
+        
+        // 2) Workspace-scoped tasks (the .code-workspace "tasks" block).
+        if (task.scope === vscode.TaskScope.Workspace) {
+            
+            // Open the .code-workspace file of the workspace.
+            await vscode.commands.executeCommand('workbench.action.tasks.openWorkspaceFileTasks');
+            
+            return;
+        }
+        
+        // 3) Folder-scoped tasks (multi-root or single folder).
+        if (task.scope && 'uri' in task.scope) {
+            
+            const folder = task.scope as vscode.WorkspaceFolder;
+            const dotVscode = vscode.Uri.joinPath(folder.uri, '.vscode');
+            const tasksJson = vscode.Uri.joinPath(dotVscode, 'tasks.json');
+            
+            try {
+                // Ensure ".vscode/" exists.
+                try { await vscode.workspace.fs.stat(dotVscode); }
+                catch { await vscode.workspace.fs.createDirectory(dotVscode); }
+
+                // Create a minimal file if missing.
+                try { await vscode.workspace.fs.stat(tasksJson); }
+                catch {
+                    const initial = Buffer.from('{\n\t"version": "2.0.0",\n\t"tasks": []\n}\n', 'utf8');
+                    await vscode.workspace.fs.writeFile(tasksJson, initial);
+                }
+
+                const doc = await vscode.workspace.openTextDocument(tasksJson);
+                await vscode.window.showTextDocument(doc, { preview: false });
+            } catch (err) {
+                vscode.window.showErrorMessage(`Could not open tasks.json for “${folder.name}”: ${err}`);
+            }
+            
+            return;
+        }
+        
+        // 4) Fallback: show a Quick Pick for the user to select the task.
+        await vscode.commands.executeCommand('workbench.action.tasks.configureTask');
+        
+        return;
+        
+        //TODO: still need any of this?
+        /*
         let workspaceName = '';
         if (item.task?.scope && typeof item.task.scope === 'object' && 'name' in item.task.scope) {
             workspaceName = item.task.scope.name;
@@ -322,6 +378,7 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskTreeItem> {
         const position = new vscode.Position(location.line, 0);
         editor.selection = new vscode.Selection(position, position);
         editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        */
     }
 }
 

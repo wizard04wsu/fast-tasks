@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TasksProvider, TaskItem } from './tasksProvider';
+import { TasksProvider, TaskTreeItem } from './tasksProvider';
 
 const COMMANDS = {
     refreshTasks: 'fast-tasks.refreshTasks',
@@ -34,11 +34,11 @@ function registerCommands(tasksProvider: TasksProvider): vscode.Disposable[] {
         ),
         vscode.commands.registerCommand(
             COMMANDS.stopTask, 
-            (item: TaskItem) => tasksProvider.stopTask(item)
+            (item: TaskTreeItem) => tasksProvider.stopTask(item)
         ),
         vscode.commands.registerCommand(
             COMMANDS.editTask,
-            (item: TaskItem) => tasksProvider.editTask(item)
+            (item: TaskTreeItem) => tasksProvider.editTask(item)
         )
     ];
 }
