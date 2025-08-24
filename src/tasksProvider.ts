@@ -10,11 +10,12 @@ interface TaskStatus {
 }
 
 interface CustomIcon {
-    id: string;
+    id?: string;
     color?: string;
 }
 
-const TASK_ICONS = {
+const DEFAULT_TASK_ICON = 'gear';
+const TASK_ICONS = new Map(Object.entries({
     debug: 'bug',
     build: 'package',
     test: 'beaker',
@@ -27,27 +28,22 @@ const TASK_ICONS = {
     stop: 'stop',
     publish: 'cloud',
     run: 'run',
-    default: 'gear'
-} as const;
+}));
 
-const TASK_COLORS = {
+const DEFAULT_TASK_COLOR = 'charts.yellow';
+const TASK_COLORS = new Map(Object.entries({
     npm: 'charts.red',
     shell: 'charts.blue',
     typescript: 'charts.purple',
     gulp: 'charts.orange',
     grunt: 'charts.yellow',
-    default: 'charts.yellow'
-} as const;
-
-// Improved type safety with literal types
-type TaskIconType = keyof typeof TASK_ICONS;
-type TaskColorType = keyof typeof TASK_COLORS;
+}));
 
 // Cache timeout in milliseconds
 const CACHE_TIMEOUT = 5000;
 
-export class TasksProvider implements vscode.TreeDataProvider<TaskItem> {
-    private readonly _onDidChangeTreeData = new vscode.EventEmitter<TaskItem | undefined | null | void>();
+export class TasksProvider implements vscode.TreeDataProvider<TaskTreeItem> {
+    private readonly _onDidChangeTreeData = new vscode.EventEmitter<TaskTreeItem | undefined | null | void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
     
     private readonly taskStatusMap = new Map<string, TaskStatus>();
@@ -227,11 +223,11 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskItem> {
         this._onDidChangeTreeData.fire();
     }
 
-    getTreeItem(element: TaskItem): vscode.TreeItem {
+    getTreeItem(element: TaskTreeItem): vscode.TreeItem {
         return element;
     }
 
-    async getChildren(): Promise<TaskItem[]> {
+    async getChildren(): Promise<TaskTreeItem[]> {
         if (!vscode.workspace.workspaceFolders) {
             return [];
         }
@@ -257,7 +253,7 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskItem> {
         );
     }
 
-    private createTaskItem(task: vscode.Task): TaskItem {
+    private createTaskItem(task: vscode.Task): TaskTreeItem {
         const taskStatus = this.taskStatusMap.get(task.name);
         
         // Try to get workspace-specific icon first
@@ -285,18 +281,7 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskItem> {
             console.log("Applied special icon for test task");
         }
         
-        const taskItem = new TaskItem(
-            task.name,
-            task.definition.type,
-            vscode.TreeItemCollapsibleState.None,
-            {
-                command: 'workbench.action.tasks.runTask',
-                title: '',
-                arguments: [task.name]
-            },
-            task,
-            customIcon
-        );
+        const taskItem = new TaskTreeItem(task, customIcon);
 
         if (taskStatus?.isActive) {
             taskItem.description = 'Running...';
@@ -313,19 +298,19 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskItem> {
         return taskItem;
     }
 
-    async stopTask(item: TaskItem): Promise<void> {
-        const taskStatus = this.taskStatusMap.get(item.label);
+    async stopTask(item: TaskTreeItem): Promise<void> {
+        const taskStatus = this.taskStatusMap.get(item.task.name);
         taskStatus?.execution?.terminate();
     }
 
-    async editTask(item: TaskItem): Promise<void> {
+    async editTask(item: TaskTreeItem): Promise<void> {
         let workspaceName = '';
         if (item.task?.scope && typeof item.task.scope === 'object' && 'name' in item.task.scope) {
             workspaceName = item.task.scope.name;
         }
 
-        const key = workspaceName ? `${workspaceName}:${item.label}` : item.label;
-        const location = this.taskLocationMap.get(key) ?? this.taskLocationMap.get(item.label);
+        const key = workspaceName ? `${workspaceName}:${item.task.name}` : item.task.name;
+        const location = this.taskLocationMap.get(key) ?? this.taskLocationMap.get(item.task.name);
 
         if (!location) {
             void vscode.window.showWarningMessage('Task definition not found');
@@ -340,121 +325,134 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskItem> {
     }
 }
 
-export class TaskItem extends vscode.TreeItem {
-    // Map for faster icon lookup
-    private static readonly iconMap = new Map(
-        Object.entries(TASK_ICONS).map(([key, value]) => [key, value])
-    );
-
-    // Map for faster color lookup
-    private static readonly colorMap = new Map(
-        Object.entries(TASK_COLORS).map(([key, value]) => [key, value])
-    );
-
+export class TaskTreeItem extends vscode.TreeItem {
+    
     constructor(
-        public readonly label: string,
-        public readonly taskType: string,
-        public readonly collapsibleState: vscode.TreeItemCollapsibleState,
-        public readonly command?: vscode.Command,
-        public readonly task?: vscode.Task,
-        private readonly customIcon?: CustomIcon
+        public readonly task: vscode.Task,
+        customIcon?: CustomIcon
     ) {
-        super(label, collapsibleState);
+        super(task.name, vscode.TreeItemCollapsibleState.None);
         
-        this.label = label;
-        this.tooltip = this.createTooltip();
+        this.command = {
+            command: 'workbench.action.tasks.runTask',
+            title: '',
+            arguments: [task.name]
+        };
+        
         this.contextValue = 'task';
         
-        // First try to use the directly passed custom icon (from tasks.json file)
-        if (this.customIcon?.id) {
-            const iconName = this.customIcon.id;
-            const iconColorTheme = this.customIcon.color 
-                ? new vscode.ThemeColor(this.customIcon.color)
-                : undefined;
-                
-            this.iconPath = new vscode.ThemeIcon(iconName, iconColorTheme);
-            return;
-        }
+        this.tooltip = this.createTooltip();
         
-        // Fallback to task definition icon if available
-        const taskDef = this.task?.definition as any || {};
-        const rawIconDef = taskDef.icon;
-        
-        let customIconId: string | undefined = undefined;
-        let customIconColor: string | undefined = undefined;
-
-        if (typeof rawIconDef === 'object' && rawIconDef !== null) {
-            customIconId = typeof rawIconDef.id === 'string' && rawIconDef.id.length > 0 
-                ? rawIconDef.id 
-                : undefined;
-                
-            customIconColor = typeof rawIconDef.color === 'string' && rawIconDef.color.length > 0 
-                ? rawIconDef.color 
-                : undefined;
-        }
-
-        let iconName: string;
-        let iconColorTheme: vscode.ThemeColor | undefined;
-
-        if (customIconId) {
-            iconName = customIconId;
-            if (customIconColor) {
-                iconColorTheme = new vscode.ThemeColor(customIconColor);
-            }
-        } else {
-            iconName = this.getIconNameFromLabel(label.toLowerCase());
-            const autoColorId = this.getColorFromTaskType(taskType.toLowerCase());
-            iconColorTheme = new vscode.ThemeColor(autoColorId);
-        }
-        
-        this.iconPath = new vscode.ThemeIcon(iconName, iconColorTheme);
+        this.iconPath = this.getCustomIconPath(customIcon?.id, customIcon?.color);
     }
-
+    
     private createTooltip(): vscode.MarkdownString {
-        try {
-            const tooltip = new vscode.MarkdownString('', true);
-            tooltip.isTrusted = true;
-            tooltip.supportHtml = true;
-
-            tooltip.appendMarkdown(`**Task:** ${this.label}\n\n`);
-            tooltip.appendMarkdown(`**Type:** ${this.taskType}\n\n`);
-
-            if (this.task?.detail) {
-                tooltip.appendMarkdown(`**Detail:** ${this.task.detail}\n\n`);
-            }
-
-            if (this.task?.execution) {
-                if ('commandLine' in this.task.execution) {
-                    tooltip.appendMarkdown(`**Command:**\n\`\`\`shell\n${this.task.execution.commandLine}\n\`\`\`\n`);
-                } else if ('args' in this.task.execution) {
-                    tooltip.appendMarkdown(`**Arguments:** ${this.task.execution.args?.join(' ') || ''}\n\n`);
-                }
-            }
-
-            return tooltip;
-        } catch (error) {
-            console.error('Failed to create tooltip:', error);
-            return new vscode.MarkdownString(`Task: ${this.label}`);
+        
+        const tooltip = new vscode.MarkdownString('', true);
+        const md = tooltip.appendMarkdown as Function;
+        
+        const task = this.task as vscode.Task;
+        const def = task.definition as vscode.TaskDefinition;
+        const exe = task.execution;
+        
+        md(`**${task.name}**\n`);
+        if (task.detail) md(`${task.detail}\n`);
+        
+        md(`\n`);
+        
+        md(`**Scope:** `);
+        if (task.scope === vscode.TaskScope.Global) md(`user profile\n`);
+        else if (task.scope === vscode.TaskScope.Workspace) md(`workspace\n`);
+        else if (task.scope) {
+            const folder = task.scope as vscode.WorkspaceFolder;
+            md(`workspace folder "${folder.name}"\n    *${folder.uri}*\n`);
         }
+        else {
+            md(`unknown\n`);
+        }
+        
+        if (task.group) md(`**Group:** ${task.group}${def.group.isDefault && ` *(default)*`}\n`);
+        
+        if (def.type) md(`**Type:** ${def.type}\n`);
+        
+        md(`\n`);
+        
+        if (exe instanceof vscode.ProcessExecution) {
+            md(`**Process:**\n    ${exe.process}\n`);
+            if (exe.args?.length) md(`**Arguments:**\n- \`${exe.args.map(str=>str.replace('`','&grave;')).join("`\n- `")}\`\n`);
+            if (exe.options) md(`**Options:** *(not shown)*\n`);
+        }
+        else if (exe instanceof vscode.ShellExecution) {
+            md(`**Shell Command:**\n    ${exe.commandLine || exe.command}\n`);
+            if (exe.args?.length) md(`**Arguments:**\n- \`${exe.args.map(str=>new String(str).replace('`','&grave;')).join("`\n- `")}\`\n`);
+            if (exe.options) md(`**Options:** *(not shown)*\n`);
+        }
+        else {
+            md(`**Custom Execution:** *(not shown)*\n`);
+        }
+        
+        return tooltip;
     }
-
-    private getIconNameFromLabel(label: string): string {
-        // Use Map for O(1) lookup instead of multiple if statements
-        for (const [key, value] of TaskItem.iconMap) {
-            if (label.includes(key)) {
+    
+    /**
+     * Infer an icon/color name to use by searching a string for a matching key.
+     * @param {Map<string, string>} map - The map of icon/color name inferences. The string is searched for each key until one is found.
+     * @param {string} str - The string to search within.
+     * @returns {string|undefined} - The icon/color name corresponding to the key that was found within the string. Undefined if no inference could be made.
+     */
+    private inferNameFromString(map: Map<string, string>, str: string|any): string|undefined {
+        if (typeof str !== 'string') return;
+        str = str.trim().toLowerCase();
+        if (!str) return;
+        for (const [key, value] of map) {
+            if (str.includes(key)) {
                 return value;
             }
         }
-        return TASK_ICONS.default;
     }
-
-    private getColorFromTaskType(taskType: string): string {
-        // Use Map for O(1) lookup instead of multiple if statements
-        for (const [key, value] of TaskItem.colorMap) {
-            if (taskType.includes(key)) {
-                return value;
-            }
+    
+    /**
+     * Generate a ThemeIcon object referencing the icon and color to use in the tree.
+     * @param {string} [themeIconName]
+     * @param {string} [themeColorName]
+     * @returns {ThemeIcon}
+     */
+    private getCustomIconPath(themeIconName?: string, themeColorName?: string): vscode.ThemeIcon {
+        
+        const rawIconDef = this.task.definition.icon || {};
+        
+        if (!themeIconName) {
+            // An icon name was not passed as an argument.
+            
+            // Get the icon name from the task definition.
+            themeIconName ??= ((typeof rawIconDef.id === 'string') || void 0) && rawIconDef.id;
+            
+            // Infer an appropriate icon from the task group.
+            themeIconName ??= this.inferNameFromString(TASK_ICONS, this.task.definition.group?.kind || this.task.definition.group);
+            
+            // Infer an appropriate icon from the task name.
+            themeIconName ??= this.inferNameFromString(TASK_ICONS, this.task.name);
+            
+            // Use the default icon.
+            themeIconName ??= DEFAULT_TASK_ICON;
         }
-        return TASK_COLORS.default;
+        
+        if (!themeColorName) {
+            // A color name was not passed as an argument.
+            
+            // Get the color name from the task definition.
+            themeColorName ??= ((typeof rawIconDef.color === 'string') || void 0) && rawIconDef.color;
+            
+            // Infer an appropriate color from the task type.
+            themeColorName ??= this.inferNameFromString(TASK_COLORS, this.task.definition.type);
+            
+            // Infer an appropriate color from the task name.
+            themeColorName ??= this.inferNameFromString(TASK_COLORS, this.task.name);
+            
+            // Use the default color.
+            themeColorName ??= DEFAULT_TASK_COLOR;
+        }
+        
+        return new vscode.ThemeIcon(themeIconName, new vscode.ThemeColor(themeColorName));
     }
 }
